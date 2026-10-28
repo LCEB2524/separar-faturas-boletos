@@ -1,31 +1,39 @@
-# Separar faturas e boletos por cliente
+# Separar faturas, boletos e NFs por cliente
 
-Lê o PDF de **faturamento agrupado** e o PDF de **boletos (Sicredi)** e gera um PDF por cliente com a fatura + os boletos correspondentes.
+Lê 3 PDFs gerais e gera **um PDF por cliente** com a fatura + boletos + notas fiscais, **somente depois de conferir tudo**.
 
-## Cruzamento
-1. Nome do cliente (campo `CLIENTE` da fatura) = `Pagador` do boleto.
-2. Nome truncado: o boleto corta o pagador em 40 caracteres.
-3. NFs da fatura (colunas `NOTA`) x `Ref. Notas Fiscais` do boleto (ignorando zeros à esquerda).
+## Entrada (na pasta de cima, ex.: `conth`)
+| Arquivo | Padrão do nome |
+|---|---|
+| Faturamento agrupado | `Emiss*Faturamento*.pdf` (1 arquivo) |
+| Boletos Sicredi | `boleto*.pdf` (1 arquivo) |
+| Notas fiscais (DANFE) | `DANFE*.pdf` (1 ou mais arquivos) |
 
-Cliente sem boleto gera só a fatura, com ` - SEM BOLETO` no nome. Cliente com vários boletos recebe todos no mesmo arquivo.
+## Conferências (antes de gerar)
+**Fatura x Boleto**
+- Cliente = Pagador (exato, nome cortado em 40 caracteres ou pelas NFs)
+- Valor da fatura = soma dos boletos
+- Nº da duplicata = nº do documento do boleto
+- NFs da fatura x "Ref. Notas Fiscais" do boleto
 
-## Conferência no final
-- Total de páginas de entrada x saída.
-- Valor da fatura x soma dos boletos.
-- Nº da duplicata x nº do documento do boleto.
-- NFs da fatura que não constam na referência do boleto.
-- Boletos que ficaram sem fatura.
+**Fatura x NF**
+- Cada NF da fatura existe no arquivo de NFs
+- Destinatário da NF = cliente da fatura
+- Valor da NF = valor da NF na fatura
+- Soma das NFs − crédito = VALOR FATURA
+- QTDE. NOTAS = NFs lidas
+
+**Sobras**: boletos sem fatura e NFs que não estão em nenhuma fatura.
+
+A conferência aparece na tela e é salva em `saida\Conferencia\conferencia_<data>.xlsx`. Os arquivos só são gerados depois de responder `s`.
+
+## Saída
+`saida\<CLIENTE>.pdf` = fatura + boletos + NFs (na ordem da fatura).
+Cliente sem boleto: `<CLIENTE> - SEM BOLETO.pdf`. No final confere páginas gravadas x esperadas.
 
 ## Uso (Windows)
 1. `python -m pip install -r requirements.txt`
-2. Coloque esta pasta dentro da pasta dos PDFs (ex.: `conth\separar`). O script procura, na pasta de cima:
-   - `Emiss*Faturamento*.pdf`
-   - `boleto*.pdf`
-3. Dê dois cliques em `SEPARAR.bat`. Os arquivos saem em `saida`.
+2. Coloque esta pasta dentro da pasta dos PDFs (ex.: `conth\separar`).
+3. Dê dois cliques em `SEPARAR.bat` (ou `python separar_faturas_boletos.py --sem-perguntar` para gerar sem perguntar).
 
-Ou informe os arquivos direto:
-```
-python separar_faturas_boletos.py "C:\pasta\faturamento.pdf" "C:\pasta\boletos.pdf"
-```
-
-A pasta `saida` é a entrada do [envio-boletos-whats-email](../envio-boletos-whats-email).
+A pasta `saida` é a entrada do `envio-boletos-whats-email`.
