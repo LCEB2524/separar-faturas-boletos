@@ -2,12 +2,14 @@
 
 Lê 3 PDFs gerais e gera **um PDF por cliente** com a fatura + boletos + notas fiscais, **somente depois de conferir tudo**.
 
-## Entrada (na pasta de cima, ex.: `conth`)
-| Arquivo | Padrão do nome |
+## Entrada
+Pasta `conth\arquivos` com os 3 PDFs gerais. **O nome dos arquivos não importa**: o script identifica cada um pelo conteúdo da 1ª página.
+
+| Arquivo | Como é reconhecido |
 |---|---|
-| Faturamento agrupado | `Emiss*Faturamento*.pdf` (1 arquivo) |
-| Boletos Sicredi | `boleto*.pdf` (1 arquivo) |
-| Notas fiscais (DANFE) | `DANFE*.pdf` (1 ou mais arquivos) |
+| Faturamento agrupado (1) | texto "FATURAMENTO AGRUPADO" |
+| Boletos Sicredi (1) | campos "Pagador" e "Ref. Notas Fiscais" |
+| Notas fiscais (1 ou mais) | texto "DANFE" |
 
 ## Conferências (antes de gerar)
 **Fatura x Boleto**
@@ -33,7 +35,7 @@ Cliente sem boleto: `<CLIENTE> - SEM BOLETO.pdf`. No final confere páginas grav
 
 ## Uso (Windows)
 1. `python -m pip install -r requirements.txt`
-2. Coloque esta pasta dentro da pasta dos PDFs (ex.: `conth\separar`).
+2. Coloque esta pasta em `conth\separar` e os 3 PDFs em `conth\arquivos`. A saída vai para `conth\saida`.
 3. Dê dois cliques em `SEPARAR.bat` (ou `python separar_faturas_boletos.py --sem-perguntar` para gerar sem perguntar).
 
 A pasta `saida` é a entrada do `envio-boletos-whats-email`.

@@ -1,10 +1,11 @@
 """
 Junta FATURA + BOLETOS + NOTAS FISCAIS de cada cliente em um único PDF.
 
-Entrada (na pasta "conth", um nível acima deste script):
-  1. Faturamento agrupado .... Emiss*Faturamento*.pdf   (uma fatura por cliente, campo CLIENTE)
-  2. Boletos Sicredi ......... boleto*.pdf              (campo Pagador e "Ref. Notas Fiscais")
-  3. Notas fiscais (DANFE) ... DANFE*.pdf               (pode haver mais de um arquivo)
+Entrada: pasta "conth\\arquivos" com os 3 PDFs gerais (o nome não importa, o script
+identifica cada um pelo conteúdo):
+  1. Faturamento agrupado .... "FATURAMENTO AGRUPADO" (uma fatura por cliente, campo CLIENTE)
+  2. Boletos Sicredi ......... campo Pagador e "Ref. Notas Fiscais"
+  3. Notas fiscais (DANFE) ... "DANFE" (pode haver mais de um arquivo)
 
 Etapas:
   1. Lê os 3 arquivos.
@@ -25,7 +26,6 @@ Uso:
   python separar_faturas_boletos.py --sem-perguntar
 """
 
-import fnmatch
 import logging
 import re
 import sys
@@ -39,9 +39,7 @@ logging.disable(logging.WARNING)  # PDFs do banco geram muitos avisos inofensivo
 
 # ------------------------------------------------------------------ configuração
 PASTA = Path(__file__).resolve().parent.parent      # pasta "conth"
-PADRAO_FATURAMENTO = "emiss*faturamento*.pdf"
-PADRAO_BOLETOS = "boleto*.pdf"
-PADRAO_NFS = "danfe*.pdf"
+PASTA_ARQUIVOS = PASTA / "arquivos"                 # onde ficam os 3 PDFs gerais
 PASTA_SAIDA = "saida"
 TOLERANCIA = 0.009                                    # diferença de centavos aceita
 
@@ -70,14 +68,40 @@ def mesmo_nome(a, b):
     return a == b or (len(curto) >= 15 and longo.startswith(curto))
 
 
-def achar_arquivos(padrao, unico=True):
-    achados = sorted(p for p in PASTA.iterdir()
-                     if p.is_file() and fnmatch.fnmatch(p.name.lower(), padrao))
-    if not achados:
-        sys.exit(f"ERRO: não encontrei arquivo '{padrao}' em {PASTA}")
-    if unico and len(achados) > 1:
-        sys.exit(f"ERRO: mais de um arquivo '{padrao}' em {PASTA}: {[p.name for p in achados]}")
-    return achados
+def classificar_arquivos():
+    """Identifica cada PDF da pasta "arquivos" pelo CONTEÚDO da 1ª página
+    (o nome do arquivo não importa): faturamento, boletos ou notas fiscais."""
+    if not PASTA_ARQUIVOS.is_dir():
+        sys.exit(f"ERRO: pasta não encontrada: {PASTA_ARQUIVOS}")
+    tipos = {"faturamento": [], "boletos": [], "nfs": [], "desconhecido": []}
+    for arq in sorted(PASTA_ARQUIVOS.iterdir()):
+        if not (arq.is_file() and arq.suffix.lower() == ".pdf"):
+            continue
+        try:
+            t = pypdf.PdfReader(str(arq)).pages[0].extract_text() or ""
+        except Exception:
+            tipos["desconhecido"].append(arq)
+            continue
+        if "FATURAMENTO AGRUPADO" in t.upper():
+            tipos["faturamento"].append(arq)
+        elif "DANFE" in t.upper():
+            tipos["nfs"].append(arq)
+        elif "Pagador" in t and ("Ref. Notas Fiscais" in t or "Nosso Número" in t):
+            tipos["boletos"].append(arq)
+        else:
+            tipos["desconhecido"].append(arq)
+    erros = []
+    if len(tipos["faturamento"]) != 1:
+        erros.append(f"faturamento: esperado 1, achei {[a.name for a in tipos['faturamento']]}")
+    if len(tipos["boletos"]) != 1:
+        erros.append(f"boletos: esperado 1, achei {[a.name for a in tipos['boletos']]}")
+    if not tipos["nfs"]:
+        erros.append("notas fiscais: nenhum PDF de DANFE encontrado")
+    if tipos["desconhecido"]:
+        print(f" Aviso: PDFs ignorados (não reconhecidos): {[a.name for a in tipos['desconhecido']]}")
+    if erros:
+        sys.exit("ERRO na pasta " + str(PASTA_ARQUIVOS) + ":\n  - " + "\n  - ".join(erros))
+    return tipos["faturamento"][0], tipos["boletos"][0], tipos["nfs"]
 
 
 def nome_arquivo(nome):
@@ -197,9 +221,13 @@ def cruzar(faturas, boletos, nfs):
                 alertas.append(f"BOLETO: duplicatas {f['dups']} x documentos {[b['doc'] for b in bs]}")
             ref = set().union(*[set(b["nfs"]) for b in bs])
             fora = sorted(set(f["notas"]) - ref)
-            extra = sorted(ref - set(f["notas"]))
+            # O banco corta o campo "Ref. Notas Fiscais": o último número pode vir pela metade
+            cortadas = {n for n in ref - set(f["notas"])
+                        if any(x.startswith(n) and x != n for x in f["notas"])}
+            extra = sorted(ref - set(f["notas"]) - cortadas)
             if fora:
-                alertas.append(f"BOLETO: NFs fora da 'Ref. Notas Fiscais': {', '.join(fora)}")
+                obs = " (campo Ref. cortado pelo banco)" if cortadas else ""
+                alertas.append(f"BOLETO: NFs fora da 'Ref. Notas Fiscais'{obs}: {', '.join(fora)}")
             if extra:
                 alertas.append(f"BOLETO: NFs no boleto que não estão na fatura: {', '.join(extra)}")
         else:
@@ -314,9 +342,7 @@ def salvar_excel(res, sobra_bol, sobra_nf, pasta):
 # ------------------------------------------------------------------ principal
 def main():
     sem_perguntar = "--sem-perguntar" in sys.argv
-    arq_fat = achar_arquivos(PADRAO_FATURAMENTO)[0]
-    arq_bol = achar_arquivos(PADRAO_BOLETOS)[0]
-    arqs_nf = achar_arquivos(PADRAO_NFS, unico=False)
+    arq_fat, arq_bol, arqs_nf = classificar_arquivos()
 
     lf, lb = pypdf.PdfReader(str(arq_fat)), pypdf.PdfReader(str(arq_bol))
     faturas, boletos = ler_faturas(lf), ler_boletos(lb)
@@ -327,7 +353,7 @@ def main():
         "Faturamento": f"{arq_fat.name} ({len(lf.pages)} pág, {len(faturas)} faturas)",
         "Boletos": f"{arq_bol.name} ({len(lb.pages)} pág, {len(boletos)} boletos)",
         "NFs": f"{', '.join(a.name for a in arqs_nf)} ({len(nfs)} NFs)"})
-    saida = arq_fat.parent / PASTA_SAIDA
+    saida = PASTA / PASTA_SAIDA
     xls = salvar_excel(res, sobra_bol, sobra_nf, saida / "Conferencia")
     if xls:
         print(f" Conferência salva em: {xls}")
