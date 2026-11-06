@@ -342,11 +342,16 @@ def salvar_excel(res, sobra_bol, sobra_nf, pasta):
 # ------------------------------------------------------------------ principal
 def main():
     sem_perguntar = "--sem-perguntar" in sys.argv
+    print(f" Lendo os PDFs da pasta {PASTA_ARQUIVOS} ... (pode levar 1 a 2 minutos)", flush=True)
     arq_fat, arq_bol, arqs_nf = classificar_arquivos()
+    print(f"   Faturamento: {arq_fat.name}\n   Boletos: {arq_bol.name}\n"
+          f"   NFs: {', '.join(a.name for a in arqs_nf)}", flush=True)
 
     lf, lb = pypdf.PdfReader(str(arq_fat)), pypdf.PdfReader(str(arq_bol))
     faturas, boletos = ler_faturas(lf), ler_boletos(lb)
+    print(" Lendo as notas fiscais...", flush=True)
     nfs, _ = ler_nfs(arqs_nf)
+    print(f"   {len(nfs)} NFs lidas. Cruzando informações...", flush=True)
     res = cruzar(faturas, boletos, nfs)
 
     sobra_bol, sobra_nf = mostrar_conferencia(res, boletos, nfs, {
