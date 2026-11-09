@@ -10,6 +10,7 @@ Pasta `conth\arquivos` com os 3 PDFs gerais. **O nome dos arquivos não importa*
 | Faturamento agrupado (1) | texto "FATURAMENTO AGRUPADO" |
 | Boletos Sicredi (1) | campos "Pagador" e "Ref. Notas Fiscais" |
 | Notas fiscais (1 ou mais) | texto "DANFE" |
+| Relatório de Créditos e Débitos do Fechamento (opcional) | texto "DÉBITOS E CRÉDITOS" |
 
 ## Conferências (antes de gerar)
 **Fatura x Boleto**
@@ -25,7 +26,13 @@ Pasta `conth\arquivos` com os 3 PDFs gerais. **O nome dos arquivos não importa*
 - Soma das NFs − crédito = VALOR FATURA
 - QTDE. NOTAS = NFs lidas
 
-**Sobras**: boletos sem fatura e NFs que não estão em nenhuma fatura.
+**Fatura x Relatório de créditos** (pelo nº da fatura)
+- VALOR DO CRÉDITO da fatura = saldo do relatório (créditos − débitos)
+- Movimentos somam o total do relatório; cliente é o mesmo
+- Fatura com crédito que não aparece no relatório gera alerta
+- Detalhe dos movimentos na aba "Créditos" do Excel
+
+**Sobras**: boletos sem fatura, NFs que não estão em nenhuma fatura e créditos do relatório sem fatura.
 
 A conferência aparece na tela e é salva em `saida\Conferencia\conferencia_<data>.xlsx`. Os arquivos só são gerados depois de responder `s`.
 

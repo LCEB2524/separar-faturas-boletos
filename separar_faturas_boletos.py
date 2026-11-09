@@ -6,6 +6,7 @@ identifica cada um pelo conteúdo):
   1. Faturamento agrupado .... "FATURAMENTO AGRUPADO" (uma fatura por cliente, campo CLIENTE)
   2. Boletos Sicredi ......... campo Pagador e "Ref. Notas Fiscais"
   3. Notas fiscais (DANFE) ... "DANFE" (pode haver mais de um arquivo)
+  4. Relatório de Créditos e Débitos do Fechamento (opcional) ... "DÉBITOS E CRÉDITOS"
 
 Etapas:
   1. Lê os 3 arquivos.
@@ -14,7 +15,9 @@ Etapas:
                          NFs da fatura x "Ref. Notas Fiscais" do boleto
        Fatura x NF     : cada NF da fatura existe no arquivo de NFs, destinatário = cliente,
                          valor da NF = valor na fatura, soma das NFs = VALOR PEDIDOS
-       Sobras          : boletos sem fatura e NFs que não estão em nenhuma fatura
+       Fatura x Crédito: "VALOR DO CRÉDITO" da fatura = saldo (créditos - débitos) do relatório
+                         para o mesmo nº de fatura; movimentos somam o total; mesmo cliente
+       Sobras          : boletos sem fatura, NFs fora das faturas, créditos sem fatura
   3. Mostra a conferência, salva em Excel (saida\\Conferencia) e só gera os PDFs depois do
      seu "s" (ou direto, com o parâmetro --sem-perguntar).
 
@@ -70,10 +73,11 @@ def mesmo_nome(a, b):
 
 def classificar_arquivos():
     """Identifica cada PDF da pasta "arquivos" pelo CONTEÚDO da 1ª página
-    (o nome do arquivo não importa): faturamento, boletos ou notas fiscais."""
+    (o nome do arquivo não importa): faturamento, boletos, notas fiscais e
+    relatório de créditos e débitos (opcional)."""
     if not PASTA_ARQUIVOS.is_dir():
         sys.exit(f"ERRO: pasta não encontrada: {PASTA_ARQUIVOS}")
-    tipos = {"faturamento": [], "boletos": [], "nfs": [], "desconhecido": []}
+    tipos = {"faturamento": [], "boletos": [], "nfs": [], "creditos": [], "desconhecido": []}
     for arq in sorted(PASTA_ARQUIVOS.iterdir()):
         if not (arq.is_file() and arq.suffix.lower() == ".pdf"):
             continue
@@ -82,7 +86,9 @@ def classificar_arquivos():
         except Exception:
             tipos["desconhecido"].append(arq)
             continue
-        if "FATURAMENTO AGRUPADO" in t.upper():
+        if "DÉBITOS E CRÉDITOS" in t.upper() or "DEBITOS E CREDITOS" in normalizar(t):
+            tipos["creditos"].append(arq)
+        elif "FATURAMENTO AGRUPADO" in t.upper():
             tipos["faturamento"].append(arq)
         elif "DANFE" in t.upper():
             tipos["nfs"].append(arq)
@@ -97,11 +103,14 @@ def classificar_arquivos():
         erros.append(f"boletos: esperado 1, achei {[a.name for a in tipos['boletos']]}")
     if not tipos["nfs"]:
         erros.append("notas fiscais: nenhum PDF de DANFE encontrado")
+    if len(tipos["creditos"]) > 1:
+        erros.append(f"relatório de créditos: esperado no máximo 1, achei {[a.name for a in tipos['creditos']]}")
     if tipos["desconhecido"]:
         print(f" Aviso: PDFs ignorados (não reconhecidos): {[a.name for a in tipos['desconhecido']]}")
     if erros:
         sys.exit("ERRO na pasta " + str(PASTA_ARQUIVOS) + ":\n  - " + "\n  - ".join(erros))
-    return tipos["faturamento"][0], tipos["boletos"][0], tipos["nfs"]
+    return (tipos["faturamento"][0], tipos["boletos"][0], tipos["nfs"],
+            tipos["creditos"][0] if tipos["creditos"] else None)
 
 
 def nome_arquivo(nome):
@@ -124,13 +133,16 @@ def ler_faturas(leitor):
             faturas.append({"nome": m.group(1).strip(), "paginas": [], "notas": {},
                             "dups": [], "valor": 0.0, "valor_pedidos": 0.0,
                             "credito": 0.0, "acrescimo": 0.0,
-                            "qtde": None, "fechada": False})
+                            "qtde": None, "fechada": False, "numero": ""})
         if not faturas:
             continue
         f = faturas[-1]
         f["paginas"].append(i)
         f["notas"].update(notas)
         f["dups"] += re.findall(r"(\d{9}[A-Z])\s", t)
+        nfat = re.search(r"No FATURA:\s*(\d+)", t)
+        if nfat:
+            f["numero"] = str(int(nfat.group(1)))
         vf = re.search(r"VALOR FATURA:\s*([\d.,]+)", t)
         vp = re.search(r"VALOR PEDIDOS:\s*([\d.,]+)", t)
         q = re.search(r"QTDE\. NOTAS:(\d+)", t)
@@ -199,8 +211,36 @@ def ler_nfs(arquivos):
     return nfs, leitores
 
 
+def ler_creditos(arq):
+    """Relatório de Débitos e Créditos do Fechamento: {nº fatura: {...}}."""
+    if arq is None:
+        return None
+    texto = "\n".join(p.extract_text() or "" for p in pypdf.PdfReader(str(arq)).pages)
+    blocos = re.split(r"(?=No FATURA:)", texto)
+    creditos = {}
+    for b in blocos[1:]:
+        cab = re.search(r"No FATURA:\s*(\d+).*?CLIENTE:\s*\d+-(.+)", b)
+        if not cab:
+            continue
+        movs = [{"controle": c, "tipo": normalizar(tp), "data": d, "valor": valor_br(v),
+                 "nf": str(int(nf)) if nf and int(nf) else ""}
+                for c, tp, d, v, nf in re.findall(
+                    r"(\d{9})\s*(CR[ÉE]DITO|D[ÉE]BITO)\s*(\d{2}/\d{2}/\d{4})\s*([\d.]+,\d{2})"
+                    r"(?:\d{9}\d{2}/\d{2}/\d{4}(\d{10}))?", b)]
+        tot = re.search(r"CR[ÉE]DITO:\s*([\d.,]+)\s*D[ÉE]BITO:\s*([\d.,]+)\s*SALDO:\s*(-?[\d.,]+)", b)
+        num = str(int(cab.group(1)))
+        creditos[num] = {
+            "numero": num, "cliente": cab.group(2).strip(), "movimentos": movs,
+            "credito": valor_br(tot.group(1)) if tot else 0.0,
+            "debito": valor_br(tot.group(2)) if tot else 0.0,
+            "saldo": valor_br(tot.group(3).lstrip("-")) * (-1 if tot and tot.group(3).startswith("-") else 1)
+            if tot else 0.0,
+        }
+    return creditos
+
+
 # ------------------------------------------------------------------ cruzamento
-def cruzar(faturas, boletos, nfs):
+def cruzar(faturas, boletos, nfs, creditos=None):
     res = []
     for f in faturas:
         bs, como = [b for b in boletos if normalizar(b["nome"]) == normalizar(f["nome"])], "nome"
@@ -254,16 +294,37 @@ def cruzar(faturas, boletos, nfs):
         if abs(esperado - f["valor"]) > TOLERANCIA:
             alertas.append(f"FATURA: soma das NFs {fmt(soma_nf_fat)} - crédito {fmt(f['credito'])} "
                            f"= {fmt(esperado)} x VALOR FATURA {fmt(f['valor'])}")
+        # ---- fatura x relatório de créditos e débitos
+        cred = None
+        if creditos is not None:
+            cred = creditos.get(f["numero"])
+            if cred:
+                cred["usado"] = True
+                soma_cred = round(sum(m["valor"] for m in cred["movimentos"] if m["tipo"] == "CREDITO"), 2)
+                soma_deb = round(sum(m["valor"] for m in cred["movimentos"] if m["tipo"] == "DEBITO"), 2)
+                if abs(soma_cred - cred["credito"]) > TOLERANCIA or abs(soma_deb - cred["debito"]) > TOLERANCIA:
+                    alertas.append(f"CRÉDITO: movimentos (créd {fmt(soma_cred)} / déb {fmt(soma_deb)}) "
+                                   f"não somam o total do relatório")
+                if not mesmo_nome(cred["cliente"], f["nome"]):
+                    alertas.append(f"CRÉDITO: cliente do relatório '{cred['cliente']}' diferente")
+                if abs(cred["saldo"] - f["credito"]) > TOLERANCIA:
+                    alertas.append(f"CRÉDITO: fatura {fmt(f['credito'])} x relatório saldo "
+                                   f"{fmt(cred['saldo'])} (créd {fmt(cred['credito'])} - "
+                                   f"déb {fmt(cred['debito'])})")
+            elif f["credito"] > TOLERANCIA:
+                alertas.append(f"CRÉDITO: fatura tem crédito de {fmt(f['credito'])} e não está "
+                               f"no relatório de créditos")
         if f["qtde"] is not None and f["qtde"] != len(f["notas"]):
             alertas.append(f"FATURA: QTDE. NOTAS {f['qtde']} x {len(f['notas'])} NFs lidas")
 
         res.append({"fatura": f, "boletos": bs, "como": como, "nfs": achadas,
-                    "faltando": faltando, "soma_bol": soma_bol, "alertas": alertas})
+                    "faltando": faltando, "soma_bol": soma_bol, "credito": cred,
+                    "alertas": alertas})
     return res
 
 
 # ------------------------------------------------------------------ conferência
-def mostrar_conferencia(res, boletos, nfs, arqs):
+def mostrar_conferencia(res, boletos, nfs, arqs, creditos=None):
     print("=" * 78)
     print(" CONFERÊNCIA")
     for k, v in arqs.items():
@@ -272,8 +333,9 @@ def mostrar_conferencia(res, boletos, nfs, arqs):
     for r in res:
         f = r["fatura"]
         ok = "OK " if not r["alertas"] else "!! "
+        cr = f" | créd {fmt(f['credito'])}" if f["credito"] else ""
         print(f" {ok}{f['nome'][:42]:42} fat {fmt(f['valor']):>10} | "
-              f"bol {len(r['boletos'])} | NF {len(r['nfs'])}/{len(f['notas'])}")
+              f"bol {len(r['boletos'])} | NF {len(r['nfs'])}/{len(f['notas'])}{cr}")
         for a in r["alertas"]:
             print(f"      - {a}")
     usados = {b["pagina"] for r in res for b in r["boletos"]}
@@ -285,6 +347,20 @@ def mostrar_conferencia(res, boletos, nfs, arqs):
         for b in sobra_bol:
             print(f"      - {b['nome']} | {b['doc']} | {fmt(b['valor'])}")
     print(f" NFs do arquivo que não estão em nenhuma fatura: {len(sobra_nf)}")
+    sobra_cred = []
+    if creditos is None:
+        if any(r["fatura"]["credito"] for r in res):
+            print(" Aviso: sem relatório de créditos na pasta - créditos das faturas NÃO conferidos")
+    else:
+        sobra_cred = [c for c in creditos.values() if not c.get("usado")]
+        if sobra_cred:
+            print(f" CRÉDITOS DO RELATÓRIO SEM FATURA ({len(sobra_cred)}):")
+            for c in sobra_cred:
+                print(f"      - fatura {c['numero']} | {c['cliente']} | saldo {fmt(c['saldo'])}")
+        tot_fat = sum(r["fatura"]["credito"] for r in res)
+        tot_rel = sum(c["saldo"] for c in creditos.values())
+        print(f" Créditos: faturas {fmt(tot_fat)} | relatório {fmt(tot_rel)}"
+              f"{'' if abs(tot_fat - tot_rel) <= TOLERANCIA else '  <-- DIFERENÇA'}")
     tot_ok = sum(1 for r in res if not r["alertas"])
     print("-" * 78)
     print(f" Clientes: {len(res)} | sem divergência: {tot_ok} | com divergência: {len(res) - tot_ok}")
@@ -295,10 +371,10 @@ def mostrar_conferencia(res, boletos, nfs, arqs):
           f"NFs anexadas: {sum(len(r['nfs']) for r in res)} de "
           f"{sum(len(r['fatura']['notas']) for r in res)}")
     print("=" * 78)
-    return sobra_bol, sobra_nf
+    return sobra_bol, sobra_nf, sobra_cred
 
 
-def salvar_excel(res, sobra_bol, sobra_nf, pasta):
+def salvar_excel(res, sobra_bol, sobra_nf, pasta, sobra_cred=()):
     try:
         import openpyxl
         from openpyxl.styles import Font, PatternFill
@@ -310,11 +386,13 @@ def salvar_excel(res, sobra_bol, sobra_nf, pasta):
     ws = wb.active
     ws.title = "Clientes"
     ws.append(["Cliente", "Valor fatura", "Valor boletos", "Qtd boletos", "Cruzamento boleto",
-               "NFs na fatura", "NFs anexadas", "NFs não encontradas", "Status", "Divergências"])
+               "NFs na fatura", "NFs anexadas", "NFs não encontradas", "Crédito fatura",
+               "Crédito relatório", "Status", "Divergências"])
     for r in res:
         f = r["fatura"]
         ws.append([f["nome"], f["valor"], r["soma_bol"], len(r["boletos"]), r["como"],
-                   len(f["notas"]), len(r["nfs"]), ", ".join(r["faltando"]),
+                   len(f["notas"]), len(r["nfs"]), ", ".join(r["faltando"]), f["credito"],
+                   r["credito"]["saldo"] if r.get("credito") else None,
                    "OK" if not r["alertas"] else "DIVERGÊNCIA", " | ".join(r["alertas"])])
         cor = "C6EFCE" if not r["alertas"] else "FFC7CE"
         for c in ws[ws.max_row]:
@@ -325,12 +403,24 @@ def salvar_excel(res, sobra_bol, sobra_nf, pasta):
         ws2.append(["Boleto sem fatura", b["nome"], b["doc"], b["valor"], ""])
     for n in sobra_nf:
         ws2.append(["NF fora das faturas", n["dest"], n["numero"], n["valor"], n["emissao"]])
+    for c in sobra_cred:
+        ws2.append(["Crédito sem fatura", c["cliente"], c["numero"], c["saldo"], ""])
+    ws3 = wb.create_sheet("Créditos")
+    ws3.append(["Fatura", "Cliente", "Controle", "Tipo", "Data", "Valor", "NF"])
+    for r in res:
+        cr = r.get("credito")
+        for m in (cr["movimentos"] if cr else []):
+            ws3.append([cr["numero"], cr["cliente"], m["controle"], m["tipo"], m["data"],
+                        m["valor"], m["nf"]])
+    for c in ws3[1]:
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="305496")
     for w in (ws, ws2):
         for c in w[1]:
             c.font = Font(bold=True, color="FFFFFF")
             c.fill = PatternFill("solid", fgColor="305496")
         w.freeze_panes = "A2"
-    for col, larg in zip("ABCDEFGHIJ", (45, 13, 13, 11, 16, 12, 12, 30, 13, 90)):
+    for col, larg in zip("ABCDEFGHIJKL", (45, 13, 13, 11, 16, 12, 12, 30, 13, 14, 13, 90)):
         ws.column_dimensions[col].width = larg
     for col, larg in zip("ABCDE", (22, 45, 14, 12, 12)):
         ws2.column_dimensions[col].width = larg
@@ -343,23 +433,27 @@ def salvar_excel(res, sobra_bol, sobra_nf, pasta):
 def main():
     sem_perguntar = "--sem-perguntar" in sys.argv
     print(f" Lendo os PDFs da pasta {PASTA_ARQUIVOS} ... (pode levar 1 a 2 minutos)", flush=True)
-    arq_fat, arq_bol, arqs_nf = classificar_arquivos()
+    arq_fat, arq_bol, arqs_nf, arq_cred = classificar_arquivos()
     print(f"   Faturamento: {arq_fat.name}\n   Boletos: {arq_bol.name}\n"
-          f"   NFs: {', '.join(a.name for a in arqs_nf)}", flush=True)
+          f"   NFs: {', '.join(a.name for a in arqs_nf)}\n"
+          f"   Créditos: {arq_cred.name if arq_cred else '(não encontrado)'}", flush=True)
+    creditos = ler_creditos(arq_cred)
 
     lf, lb = pypdf.PdfReader(str(arq_fat)), pypdf.PdfReader(str(arq_bol))
     faturas, boletos = ler_faturas(lf), ler_boletos(lb)
     print(" Lendo as notas fiscais...", flush=True)
     nfs, _ = ler_nfs(arqs_nf)
     print(f"   {len(nfs)} NFs lidas. Cruzando informações...", flush=True)
-    res = cruzar(faturas, boletos, nfs)
+    res = cruzar(faturas, boletos, nfs, creditos)
 
-    sobra_bol, sobra_nf = mostrar_conferencia(res, boletos, nfs, {
+    sobra_bol, sobra_nf, sobra_cred = mostrar_conferencia(res, boletos, nfs, {
         "Faturamento": f"{arq_fat.name} ({len(lf.pages)} pág, {len(faturas)} faturas)",
         "Boletos": f"{arq_bol.name} ({len(lb.pages)} pág, {len(boletos)} boletos)",
-        "NFs": f"{', '.join(a.name for a in arqs_nf)} ({len(nfs)} NFs)"})
+        "NFs": f"{', '.join(a.name for a in arqs_nf)} ({len(nfs)} NFs)",
+        "Créditos": (f"{arq_cred.name} ({len(creditos)} faturas)" if arq_cred
+                     else "(sem relatório)")}, creditos)
     saida = PASTA / PASTA_SAIDA
-    xls = salvar_excel(res, sobra_bol, sobra_nf, saida / "Conferencia")
+    xls = salvar_excel(res, sobra_bol, sobra_nf, saida / "Conferencia", sobra_cred)
     if xls:
         print(f" Conferência salva em: {xls}")
 
