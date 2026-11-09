@@ -37,7 +37,8 @@ Pasta `conth\arquivos` com os 3 PDFs gerais. **O nome dos arquivos não importa*
 A conferência aparece na tela e é salva em `saida\Conferencia\conferencia_<data>.xlsx`. Os arquivos só são gerados depois de responder `s`.
 
 ## Saída
-`saida\<CLIENTE>.pdf` = fatura + boletos + NFs (na ordem da fatura).
+`saida\<CLIENTE>.pdf` = fatura + relatório de créditos do cliente (se tiver) + boletos + NFs.
+Se a página do relatório tiver créditos de outros clientes, o script gera uma página só com os créditos daquele cliente, para não mandar dados de terceiros.
 Cliente sem boleto: `<CLIENTE> - SEM BOLETO.pdf`. No final confere páginas gravadas x esperadas.
 
 ## Uso (Windows)

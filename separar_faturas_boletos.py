@@ -21,7 +21,7 @@ Etapas:
   3. Mostra a conferência, salva em Excel (saida\\Conferencia) e só gera os PDFs depois do
      seu "s" (ou direto, com o parâmetro --sem-perguntar).
 
-Saída: saida\\<CLIENTE>.pdf  = fatura + boletos + NFs (na ordem da fatura)
+Saída: saida\\<CLIENTE>.pdf  = fatura + relatório de créditos (se tiver) + boletos + NFs
        Cliente sem boleto: "<CLIENTE> - SEM BOLETO.pdf"
 
 Uso:
@@ -212,31 +212,92 @@ def ler_nfs(arquivos):
 
 
 def ler_creditos(arq):
-    """Relatório de Débitos e Créditos do Fechamento: {nº fatura: {...}}."""
+    """Relatório de Débitos e Créditos do Fechamento: {nº fatura: {...}}.
+    Guarda também em quais páginas está cada fatura e se a página é só dela."""
     if arq is None:
         return None
-    texto = "\n".join(p.extract_text() or "" for p in pypdf.PdfReader(str(arq)).pages)
-    blocos = re.split(r"(?=No FATURA:)", texto)
-    creditos = {}
-    for b in blocos[1:]:
-        cab = re.search(r"No FATURA:\s*(\d+).*?CLIENTE:\s*\d+-(.+)", b)
-        if not cab:
-            continue
-        movs = [{"controle": c, "tipo": normalizar(tp), "data": d, "valor": valor_br(v),
-                 "nf": str(int(nf)) if nf and int(nf) else ""}
-                for c, tp, d, v, nf in re.findall(
-                    r"(\d{9})\s*(CR[ÉE]DITO|D[ÉE]BITO)\s*(\d{2}/\d{2}/\d{4})\s*([\d.]+,\d{2})"
-                    r"(?:\d{9}\d{2}/\d{2}/\d{4}(\d{10}))?", b)]
+    leitor = pypdf.PdfReader(str(arq))
+    creditos, atual = {}, None
+    cabecalho = ""
+    for i, pag in enumerate(leitor.pages):
+        t = pag.extract_text() or ""
+        if not cabecalho:
+            cab = re.search(r"(INTER.*?EMISS[ÃA]O\s*:\s*\S+)", t)
+            cabecalho = cab.group(1).strip() if cab else "RELATÓRIO DOS DÉBITOS E CRÉDITOS"
+        partes = re.split(r"(?=No FATURA:)", t)
+        nums_pag = []
+        if atual and partes[0].strip():                 # continuação da fatura da página anterior
+            creditos[atual]["texto"] += "\n" + partes[0]
+            creditos[atual]["paginas"].append(i)
+            nums_pag.append(atual)
+        for bloco in partes[1:]:
+            cab = re.search(r"No FATURA:\s*(\d+).*?CLIENTE:\s*\d+-(.+)", bloco)
+            if not cab:
+                continue
+            atual = str(int(cab.group(1)))
+            creditos.setdefault(atual, {"numero": atual, "cliente": cab.group(2).strip(),
+                                        "texto": "", "paginas": [], "leitor": leitor,
+                                        "cabecalho": cabecalho})
+            creditos[atual]["texto"] += "\n" + bloco
+            if i not in creditos[atual]["paginas"]:
+                creditos[atual]["paginas"].append(i)
+            nums_pag.append(atual)
+        for n in set(nums_pag):
+            creditos[n]["pagina_exclusiva"] = creditos[n].get("pagina_exclusiva", True) and \
+                len(set(nums_pag)) == 1
+    for c in creditos.values():
+        b = c["texto"]
+        c["movimentos"] = [
+            {"controle": ctl, "tipo": normalizar(tp), "data": d, "valor": valor_br(v),
+             "nf": str(int(nf)) if nf and int(nf) else ""}
+            for ctl, tp, d, v, nf in re.findall(
+                r"(\d{9})\s*(CR[ÉE]DITO|D[ÉE]BITO)\s*(\d{2}/\d{2}/\d{4})\s*([\d.]+,\d{2})"
+                r"(?:\d{9}\d{2}/\d{2}/\d{4}(\d{10}))?", b)]
         tot = re.search(r"CR[ÉE]DITO:\s*([\d.,]+)\s*D[ÉE]BITO:\s*([\d.,]+)\s*SALDO:\s*(-?[\d.,]+)", b)
-        num = str(int(cab.group(1)))
-        creditos[num] = {
-            "numero": num, "cliente": cab.group(2).strip(), "movimentos": movs,
-            "credito": valor_br(tot.group(1)) if tot else 0.0,
-            "debito": valor_br(tot.group(2)) if tot else 0.0,
-            "saldo": valor_br(tot.group(3).lstrip("-")) * (-1 if tot and tot.group(3).startswith("-") else 1)
-            if tot else 0.0,
-        }
+        c["credito"] = valor_br(tot.group(1)) if tot else 0.0
+        c["debito"] = valor_br(tot.group(2)) if tot else 0.0
+        c["saldo"] = (valor_br(tot.group(3).lstrip("-")) * (-1 if tot.group(3).startswith("-") else 1)
+                      if tot else 0.0)
     return creditos
+
+
+def pagina_credito(cred):
+    """Página com SÓ os créditos/débitos deste cliente (para não mandar dados de outros
+    clientes quando o relatório tem várias faturas na mesma página)."""
+    linhas = [cred["cabecalho"], "RELATÓRIO DOS DÉBITOS E CRÉDITOS DO FATURAMENTO", "=" * 95,
+              f"No FATURA: {cred['numero'].zfill(9)}   CLIENTE: {cred['cliente']}", "-" * 95,
+              f"{'CONTROLE':<11}{'TIPO':<9}{'DATA':<12}{'VALOR':>14}   {'N. FISCAL':<10}", "-" * 95]
+    for m in cred["movimentos"]:
+        linhas.append(f"{m['controle']:<11}{m['tipo']:<9}{m['data']:<12}{fmt(m['valor']):>14}   "
+                      f"{m['nf']:<10}")
+    linhas += ["-" * 95, f"TOTALIZANDO:  CRÉDITO: {fmt(cred['credito'])}   "
+                         f"DÉBITO: {fmt(cred['debito'])}   SALDO: {fmt(cred['saldo'])}", "=" * 95]
+
+    def esc(txt):
+        return (txt.encode("cp1252", "replace").replace(b"\\", b"\\\\")
+                .replace(b"(", b"\\(").replace(b")", b"\\)"))
+    conteudo = b"BT /F1 9 Tf 11 TL 30 800 Td " + b" ".join(
+        b"(" + esc(l) + b") Tj T*" for l in linhas) + b" ET"
+    from pypdf.generic import (DecodedStreamObject, DictionaryObject, NameObject)
+    w = pypdf.PdfWriter()
+    pag = w.add_blank_page(width=595, height=842)
+    fonte = DictionaryObject({NameObject("/Type"): NameObject("/Font"),
+                              NameObject("/Subtype"): NameObject("/Type1"),
+                              NameObject("/BaseFont"): NameObject("/Courier"),
+                              NameObject("/Encoding"): NameObject("/WinAnsiEncoding")})
+    pag[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"): DictionaryObject(
+        {NameObject("/F1"): w._add_object(fonte)})})
+    stream = DecodedStreamObject()
+    stream.set_data(conteudo)
+    pag[NameObject("/Contents")] = w._add_object(stream)
+    return pag
+
+
+def paginas_do_credito(cred):
+    """Páginas do relatório a anexar no arquivo do cliente."""
+    if cred.get("pagina_exclusiva"):
+        return [cred["leitor"].pages[i] for i in cred["paginas"]]
+    return [pagina_credito(cred)]
 
 
 # ------------------------------------------------------------------ cruzamento
@@ -469,6 +530,10 @@ def main():
         w = pypdf.PdfWriter()
         for p in r["fatura"]["paginas"]:
             w.add_page(lf.pages[p])
+        pags_cred = paginas_do_credito(r["credito"]) if r.get("credito") else []
+        for pg in pags_cred:
+            w.add_page(pg)
+        r["pags_cred"] = len(pags_cred)
         for b in r["boletos"]:
             w.add_page(lb.pages[b["pagina"]])
         for num in r["nfs"]:
@@ -479,6 +544,7 @@ def main():
             w.write(fh)
         paginas += len(w.pages)
     esperado = (sum(len(r["fatura"]["paginas"]) for r in res)
+                + sum(r.get("pags_cred", 0) for r in res)
                 + sum(len(r["boletos"]) for r in res)
                 + sum(len(nfs[n]["paginas"]) for r in res for n in r["nfs"]))
     print(f"\n {len(res)} arquivos gerados em {saida}")
